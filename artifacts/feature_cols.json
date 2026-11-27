@@ -1,0 +1,21 @@
+{
+  "features": [
+    "step",
+    "amount",
+    "oldbalanceOrg",
+    "newbalanceOrig",
+    "oldbalanceDest",
+    "newbalanceDest",
+    "hour",
+    "day_of_month",
+    "error_orig",
+    "error_dest",
+    "dest_zero_flag",
+    "type_TRANSFER"
+  ],
+  "count": 12,
+  "allowed_types": [
+    "TRANSFER",
+    "CASH_OUT"
+  ]
+}
