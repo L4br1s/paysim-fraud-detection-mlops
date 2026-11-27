@@ -30,6 +30,7 @@ O impacto financeiro escala rápido, gerando prejuízo direto para os cofres da 
 * **Explicabilidade (XAI):** SHAP (`TreeExplainer`)
 * **Visualização:** Matplotlib, Seaborn
 * **Ambiente de Desenvolvimento:** Jupyter Notebook / VS Code
+* **API & Servimento:** FastAPI, Pydantic, Uvicorn, Joblib
 
 ## Análise Exporatória (EDA) e Feature Engineering
 
@@ -43,11 +44,11 @@ O impacto financeiro escala rápido, gerando prejuízo direto para os cofres da 
 | `type` | `object` | Tipo de movimentação (`PAYMENT`, `TRANSFER`, `CASH_OUT`, `DEBIT`, `CASH_IN`). | Filtrado apenas para `TRANSFER` e `CASH_OUT` (onde ocorrem as fraudes) e convertido via One-Hot Encoding. |
 | `amount` | `float64` | Valor monetário transacionado. | Mantido como feature contínua base. |
 | `nameOrig` | `object` | Identificador único do cliente de origem (`C...`). | **Descartado:** Identificador com alta cardinalidade para evitar memorização (overfitting). |
-| `oldbalanceOrg` | `float64` | Saldo disponível na conta de origem antes da operação. | Utilizado para criar a feature `errorBalanceOrig`. |
-| `newbalanceOrig` | `float64` | Saldo na conta de origem após a operação. | Utilizado para criar a feature `errorBalanceOrig`. |
+| `oldbalanceOrg` | `float64` | Saldo disponível na conta de origem antes da operação. | Utilizado para criar a feature `error_orig`. |
+| `newbalanceOrig` | `float64` | Saldo na conta de origem após a operação. | Utilizado para criar a feature `error_orig`. |
 | `nameDest` | `object` | Identificador da conta recebedora (`C...` cliente ou `M...` merchant). | **Descartado:** ID de alta cardinalidade sem histórico temporal consolidado no simulador. |
-| `oldbalanceDest` | `float64` | Saldo da conta recebedora antes da operação. | Utilizado para criar a feature `errorBalanceDest`. |
-| `newbalanceDest` | `float64` | Saldo da conta recebedora após a operação. | Utilizado para criar a feature `errorBalanceDest`. |
+| `oldbalanceDest` | `float64` | Saldo da conta recebedora antes da operação. | Utilizado para criar a feature `error_dest`. |
+| `newbalanceDest` | `float64` | Saldo da conta recebedora após a operação. | Utilizado para criar a feature `error_dest`. |
 | `isFraud` | `int64` | **Variável Alvo (Target):** `1` para fraude real, `0` para transação idônea. | Target de predição do modelo. |
 | `isFlaggedFraud` | `int64` | Regra de negócio legada do simulador (flag em transferências acima de 200k). | **Descartado do treino:** Sistema estático rudimentar do simulador (marca apenas 16 fraudes no dataset inteiro). |
 
@@ -133,7 +134,7 @@ A base contempla 5 modalidades distintas de transação: `CASH_IN`, `CASH_OUT`, 
 ![Comparação de Saldos de Origem](assets/boxplot_saldos_origem.png)
 
 * **Insight:** Enquanto clientes idôneos realizam transações rotineiras preservando reservas na conta, as fraudes apresentam o padrão clássico de esvaziamento forçado: o saldo final da vítima converge sistematicamente para zero (`newbalanceOrig == 0`). O atacante busca transferir o teto máximo permitido do saldo disponível.
-* **Decisão:** Variáveis **mantidas** e utilizadas como matéria-prima direta para a criação da variável contábil `errorBalanceOrig`.
+* **Decisão:** Variáveis **mantidas** e utilizadas como matéria-prima direta para a criação da variável contábil `error_orig`.
 
 ---
 
@@ -142,7 +143,7 @@ A base contempla 5 modalidades distintas de transação: `CASH_IN`, `CASH_OUT`, 
 ![Comparação de Saldos de Destino](assets/boxplot_saldos_destino.png)
 
 * **Insight:** Nas operações fraudulentas, as contas recebedoras (*mules* ou intermediárias) iniciam predominantemente com saldo anterior zerado ou muito baixo (`oldbalanceDest == 0`), padrão típico de contas recém-alugadas ou criadas exclusivamente para evasão. Pós-transação, a mediana reflete o acúmulo repentino do capital drenado antes do saque/liquidação.
-* **Decisão:** Variáveis **mantidas** e combinadas na variável `errorBalanceDest` para capturar inconsistências no recebimento.
+* **Decisão:** Variáveis **mantidas** e combinadas na variável `error_dest` para capturar inconsistências no recebimento.
 
 </details>
 
@@ -160,20 +161,20 @@ Com base nisso, formulei duas variáveis de **inconsistência de balanço**:
 
 ---
 
-#### 1. Discrepância na Origem (`errorBalanceOrig`)
+#### 1. Discrepância na Origem (`error_orig`)
 Calcula a divergência entre o débito esperado e a alteração real no saldo da vítima:
 
-$$\text{errorBalanceOrig} = \text{newbalanceOrig} + \text{amount} - \text{oldbalanceOrg}$$
+$$\text{error_orig} = \text{newbalanceOrig} + \text{amount} - \text{oldbalanceOrg}$$
 
 * **Comportamento Idôneo:** O valor tende a **0** (o débito bate exatamente com o valor transferido).
 * **Comportamento Fraudulento:** Assume valores atípicos. Como o fraudador frequentemente tenta transferir quantias maiores do que o saldo total da vítima, o saldo zera mas a conta matemática não fecha.
 
 ---
 
-#### 2. Discrepância no Destino (`errorBalanceDest`)
+#### 2. Discrepância no Destino (`error_dest`)
 Calcula a divergência entre o crédito esperado e o saldo registrado na conta recebedora (*mule*):
 
-$$\text{errorBalanceDest} = \text{oldbalanceDest} + \text{amount} - \text{newbalanceDest}$$
+$$\text{error_dest} = \text{oldbalanceDest} + \text{amount} - \text{newbalanceDest}$$
 
 * **Comportamento Idôneo:** O valor tende a **0** (o saldo sobe exatamente na proporção da quantia recebida).
 * **Comportamento Fraudulento:** Valores muito elevados ou anômalos. Em ataques orquestrados, a conta laranja costuma ter saldo final registrado como zero ou inconsistente devido ao saque imediato (`CASH_OUT`) em fração de segundos.
@@ -211,7 +212,7 @@ Para garantir generalização sem vazamento de dados (*data leakage*), o pipelin
 
 Modelos baseados em árvores com aumento de gradiente (*Gradient Boosted Decision Trees - GBDT*) continuam sendo a referência para dados tabulares estruturados no setor bancário por vantagens práticas:
 
-* **Mapeamento de Não-Linearidades e Interações:** O XGBoost cria árvores sequenciais focadas nos resíduos dos erros anteriores. Isso permite capturar interações complexas entre variáveis contábeis (por exemplo: a combinação de um `errorBalanceOrig` atípico com um horário específico da madrugada) sem necessidade de transformações polinomiais manuais.
+* **Mapeamento de Não-Linearidades e Interações:** O XGBoost cria árvores sequenciais focadas nos resíduos dos erros anteriores. Isso permite capturar interações complexas entre variáveis contábeis (por exemplo: a combinação de um `error_orig` atípico com um horário específico da madrugada) sem necessidade de transformações polinomiais manuais.
 * **Robustez a Outliers e Escalas:** Transações financeiras possuem distribuição de cauda longa (*heavy tail*) com valores discrepantes. Árvores tomam decisões por particionamento de espaço (divisão por limiares), tornando o modelo imune a distorções de escala que prejudicariam modelos lineares ou redes neurais sem padronização extrema.
 * **Velocidade de Inferência:** Baixa latência computacional em predição, viabilizando o uso do modelo em esteiras de tempo real pré-autorização.
 
@@ -242,7 +243,7 @@ xgb = XGBClassifier(
 * **`scale_pos_weight = scale_weight` (~336x):**
   * **O Cálculo:** A relação $\frac{\text{total negativos}}{\text{total positivos}}$ define a taxa real de desbalanceamento na partição de treino. No recorte analítico (`TRANSFER` e `CASH_OUT`), a proporção observada é de aproximadamente 1 fraude para cada 336 transações idôneas.
   * **Objetivo de Negócio:** Em esteiras antifraude bancárias, a perda por falso negativo (fraude consumada, estorno e risco reputacional) é substancialmente mais gravosa do que uma checagem preventiva. A ponderação força o gradiente a punir a omissão de transações maliciosas com severidade amplificada.
-  * **Por que a precisão não colapsou:** Em bases com alto nível de ruído, pesos dessa magnitude costumam gerar disparos excessivos de falsos alarmes. No entanto, o modelo sustentou **99,92% de precisão** (apenas 1 falso positivo em mais de 414 mil transações legítimas avaliadas). O resultado valida a eficácia da engenharia contábil: o sinal provido por `errorBalanceOrig` e `errorBalanceDest` entrega separabilidade tão nítida que o algoritmo intercepta **99,51% dos ataques** sem gerar atrito na esteira de aprovação legítima.
+  * **Por que a precisão não colapsou:** Em bases com alto nível de ruído, pesos dessa magnitude costumam gerar disparos excessivos de falsos alarmes. No entanto, o modelo sustentou **99,92% de precisão** (apenas 1 falso positivo em mais de 414 mil transações legítimas avaliadas). O resultado valida a eficácia da engenharia contábil: o sinal provido por `error_orig` e `error_dest` entrega separabilidade tão nítida que o algoritmo intercepta **99,51% dos ataques** sem gerar atrito na esteira de aprovação legítima.
 
 * **`eval_metric='logloss'`:**
   * Minimiza a perda logarítmica direta sobre as probabilidades preditas em vez de calibrar por métricas discretas estáticas, garantindo estimativas contínuas e calibradas de probabilidade de risco por transação.
@@ -253,6 +254,24 @@ xgb = XGBClassifier(
 
 </details>
 
+#<details>
+<summary><b>API de Inferência (FastAPI)</b></summary>
+<br>
+
+O modelo salvo (`artifacts/xgb_fraud_model.joblib`) e o esquema de colunas (`artifacts/feature_cols.json`) são expostos via REST em `app/main.py`.
+
+### Contrato de Entrada e 12 Features
+O `TransactionPayload` valida os campos com Pydantic e normaliza `type` (`strip().upper()`). A função `build_features_df` monta o `DataFrame` com as 12 features alinhadas a `artifacts/feature_cols.json`:
+- **Base:** `step`, `amount`, `oldbalanceOrg`, `newbalanceOrig`, `oldbalanceDest`, `newbalanceDest`
+- **Temporais:** `hour` (`step % 24`), `day_of_month` (`step // 24`)
+- **Contábeis e flags:** `error_orig`, `error_dest`, `dest_zero_flag`, `type_TRANSFER`
+
+### Endpoints
+- `GET /`: instruções, tipos suportados e exemplo de payload.
+- `GET /status`: estado do serviço e confirmação de `model_loaded`.
+- `POST /predict`: pontua `TRANSFER` e `CASH_OUT` (`status: "scored"`, `fraud_probability`, `is_fraud` com `THRESHOLD = 0.5`) e marca `PAYMENT`, `CASH_IN` e `DEBIT` como `status: "out_of_scope"` (`fraud_probability: null`, `is_fraud: null`).
+
+</details>
 
 <details>
 <summary><b>Avaliação de Performance & Análise de Erros</b></summary>
@@ -291,10 +310,10 @@ O gráfico de resumo consolida o peso de cada variável e a direção do seu imp
 
 ![SHAP Summary Plot](assets/shap_summary.png)
 
-* **Supremacia das Features Contábeis:** As variáveis derivadas `errorBalanceOrig` e `errorBalanceDest` assumiram o topo absoluto de importância preditiva, superando amplamente as métricas brutas fornecidas originalmente pelo PaySim.
+* **Supremacia das Features Contábeis:** As variáveis derivadas `error_orig` e `error_dest` assumiram o topo absoluto de importância preditiva, superando amplamente as métricas brutas fornecidas originalmente pelo PaySim.
 * **Sentido do Impacto:**
-  * **Alto valor de `errorBalanceOrig` (pontos vermelhos à direita):** Forte empurrão para a classificação de fraude. Mostra a quebra contábil direta entre o valor retirado e a redução real na conta da vítima.
-  * **Comportamento em `errorBalanceDest`:** Anomalias no saldo da conta de passagem aumentam substancialmente o risco de a transação ser sinalizada como evasão via conta laranja (*mule account*).
+  * **Alto valor de `error_orig` (pontos vermelhos à direita):** Forte empurrão para a classificação de fraude. Mostra a quebra contábil direta entre o valor retirado e a redução real na conta da vítima.
+  * **Comportamento em `error_dest`:** Anomalias no saldo da conta de passagem aumentam substancialmente o risco de a transação ser sinalizada como evasão via conta laranja (*mule account*).
 * **Validação do Modelo:** O algoritmo aprendeu causalidade contábil sólida em vez de correlacionar ruído estático de horários ou volumes isolados.
 
 ---
@@ -307,8 +326,8 @@ Para auditar um caso real interceptado pelo modelo, analisamos a decomposição 
 
 * **Linha de Base ($E[f(X)]$):** Representa a probabilidade esperada média do modelo no conjunto de dados (cenário padrão, onde a maioria esmagadora é legítima).
 * **Contribuições Passo a Passo:**
-  * O desvio em `errorBalanceOrig` é o primeiro grande vetor de empurrão (+valor), tirando a transação da neutralidade e aproximando-a da faixa de alerta.
-  * A ausência de equilíbrio em `errorBalanceDest` consolida a probabilidade final bem acima do limiar de corte (*threshold*).
+  * O desvio em `error_orig` é o primeiro grande vetor de empurrão (+valor), tirando a transação da neutralidade e aproximando-a da faixa de alerta.
+  * A ausência de equilíbrio em `error_dest` consolida a probabilidade final bem acima do limiar de corte (*threshold*).
 * **Utilidade Operacional:** Esse detalhamento permite que um analista de risco veja em segundos o motivo do bloqueio automático no painel de monitoramento, agilizando o suporte ao cliente sem comprometer a segurança.
 
 </details>
@@ -332,9 +351,8 @@ Em instituições financeiras, a eficácia de uma esteira antifraude não se med
 
 Para elevar a solução a um ambiente produtivo de nível corporativo, o roadmap técnico contempla os seguintes desenvolvimentos:
 
-### 1. Disponibilização em API de Baixa Latência
-* Empacotamento do pipeline de pré-processamento, engenharia de features e inferência em um microsserviço REST/gRPC (utilizando frameworks como FastAPI ou Triton Inference Server).
-* Otimização para resposta em tempo real dentro do SLA transacional bancário (< 50ms) no fluxo de pré-autorização.
+### 1. Conteinerização & Deploy (Docker / Nuvem)
+- Empacotamento da API em FastAPI (`app/main.py`) e artefatos (`artifacts/`) em imagem Docker para execução reproduzível em qualquer ambiente ou nuvem.
 
 ### 2. Camada Não Supervisionada para Monitoramento Integral
 * **Superação do Filtro Categórico:** O modelo supervisionado atual foi restrito a `TRANSFER` e `CASH_OUT` por serem as únicas classes com rótulos positivos no histórico sintético. No entanto, descartar transações como `PAYMENT`, `DEBIT` e `CASH_IN` em produção geraria pontos cegos contra novas tipologias de fraude (como lavagem de dinheiro, contas de passagem e ataques pulverizados / *smurfing*).
@@ -351,19 +369,24 @@ Para elevar a solução a um ambiente produtivo de nível corporativo, o roadmap
 <br>
 
 ### Pré-requisitos
-* Python 3.10 ou superior
-* Git
+- Python 3.10 ou superior
+- Git
 
-<details>
-<summary><b>Como Reproduzir o Projeto</b></summary>
-<br>
+### Execução Local da API (FastAPI)
+1. Na raiz do projeto, garanta `app/__init__.py`, `app/main.py`, `artifacts/xgb_fraud_model.joblib` e `artifacts/feature_cols.json`.
+2. Suba o servidor com Uvicorn:
+   ```bash
+   uvicorn app.main:app --reload
+   ```
+3. Acesse http://127.0.0.1:8000/docs ou envie requisições pelo predict.http.
+   
+### Execução via Colab
 
-O desenvolvimento e a experimentação foram conduzidos diretamente em ambiente de nuvem (Google Colab / Kaggle) devido ao volume de dados e aceleração de hardware.
+1. Acesse o notebook no diretório notebooks/.
 
-<details>
-<summary><b>Como Reproduzir o Projeto</b></summary>
-<br>
+2. Abra o arquivo .ipynb no Google Colab ou importe-o em uma sessão do Kaggle.
 
+<<<<<<< HEAD
 O desenvolvimento e a experimentação foram conduzidos diretamente em ambiente de nuvem (Google Colab / Kaggle) devido à volumetria de dados e aceleração de hardware.
 
 ### Execução via Google Colab / Kaggle
@@ -374,3 +397,10 @@ O desenvolvimento e a experimentação foram conduzidos diretamente em ambiente 
    import kagglehub
    path = kagglehub.dataset_download("mtalaltariq/paysim-data")
    ``
+=======
+3. O download da base é feito de forma programática via kagglehub, dispensando o envio manual de chaves ou credenciais de API (kaggle.json):
+```python
+import kagglehub
+path = kagglehub.dataset_download("mtalaltariq/paysim-data")
+```
+>>>>>>> e1a091d (small changes in readme)
