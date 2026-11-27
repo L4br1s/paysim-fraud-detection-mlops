@@ -17,7 +17,7 @@ A ideia é construir o fluxo do zero, desde a Análise exploratória (EDA), até
 
 O objetivo principal do modelo é combater ataques de **Account Takeover (ATO)** com **Evasão Imediata via Contas Laranjas (*Mule Accounts*)**.
 
-Nesse cenário, invasores obtêm acesso não autorizado a contas legítimas (via phishing, malware, SIM swap ou engenharia social) e transferem todo — ou quase todo — o saldo disponível para contas intermediárias sob seu controle (as famosas contas laranjas).
+Nesse cenário, invasores obtêm acesso não autorizado a contas legítimas (via phishing, malware, SIM swap ou engenharia social) e transferem todo (ou quase todo) o saldo disponível para contas intermediárias sob seu controle (as famosas contas laranjas).
 
 Para driblar o bloqueio preventivo da instituição ou mecanismos de reversão rápida (como o MED no Pix), o fraudador age em minutos: saca a quantia em espécie ou escoa os fundos para fora do sistema tradicional (carteiras digitais, cripto ou afins) antes que a vítima perceba a invasão.
 
